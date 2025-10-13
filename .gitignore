@@ -1,0 +1,10 @@
+build/
+results/
+*.o
+*.elf
+*.log
+*.zip
+*.tar.gz
+*.pcap
+*.d
+
