@@ -28,13 +28,24 @@ static void udp_rx_callback(struct simple_udp_connection *c,
                             const uint8_t *data,
                             uint16_t datalen) {
 
+  /* 1️⃣ Öncelikle gelen verinin "TAMPER" olup olmadığını kontrol et */
+  if(datalen >= 6 && strncmp((const char *)data, "TAMPER", 6) == 0) {
+    LOG_WARN("[CH] Received TAMPER command from ");
+    LOG_INFO_6ADDR(sender_addr);
+    LOG_INFO_("\n");
+
+    /* Simüle edilmiş saldırı: zinciri boz */
+    blockchain_tamper_random_block();
+    return; // saldırı tespit edildi, normal veri işleme yapılmaz
+  }
+
+  /* 2️⃣ Eğer normal sıcaklık verisiyse işleme devam et */
   int temp;
   memcpy(&temp, data, sizeof(temp));
   LOG_INFO("Received temperature: %d°C from ", temp);
   LOG_INFO_6ADDR(sender_addr);
   LOG_INFO_("\n");
 
-  /* Veriyi stringe dönüştür */
   char data_str[32];
   snprintf(data_str, sizeof(data_str), "%d", temp);
 
@@ -50,6 +61,7 @@ static void udp_rx_callback(struct simple_udp_connection *c,
 PROCESS_THREAD(wsn_project_process, ev, data)
 {
   static struct etimer timer;
+  static struct etimer verify_timer; // doğrulama için ikinci zamanlayıcı
 
   PROCESS_BEGIN();
 
@@ -59,13 +71,26 @@ PROCESS_THREAD(wsn_project_process, ev, data)
   /* UDP bağlantısını başlat */
   simple_udp_register(&udp_conn, UDP_PORT, NULL, UDP_PORT, udp_rx_callback);
 
-  while(1) {
-    /* Her 10 saniyede bir otomasyon kontrolü yap */
-    etimer_set(&timer, CLOCK_SECOND * 10);
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&timer));
+  /* Başlangıç zamanlayıcıları */
+  etimer_set(&timer, CLOCK_SECOND * 10);
+  etimer_set(&verify_timer, CLOCK_SECOND * 30);
 
-    LOG_INFO("[[A] Automation] Checking conditions...\n");
-    automation_check_conditions();
+  while(1) {
+    PROCESS_WAIT_EVENT();
+
+    /* 10 saniyede bir otomasyon kontrolü */
+    if(etimer_expired(&timer)) {
+      LOG_INFO("[[A] Automation] Checking conditions...\n");
+      automation_check_conditions();
+      etimer_reset(&timer);
+    }
+
+    /* 30 saniyede bir blockchain doğrulama */
+    if(etimer_expired(&verify_timer)) {
+      LOG_INFO("[[B] Blockchain] Periodic verification running...\n");
+      blockchain_verify_chain();
+      etimer_reset(&verify_timer);
+    }
   }
 
   PROCESS_END();

@@ -16,6 +16,7 @@
  */
 void automation_check_conditions(void);
 
+
 /**
  * @brief Called when a new transaction arrives.
  *        Increases the transaction counter.
