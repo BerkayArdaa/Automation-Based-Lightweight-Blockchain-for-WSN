@@ -21,7 +21,7 @@ typedef struct block {
 } block_t;
 
 /* Global blockchain listesi */
-extern list_t blockchain;
+
 
 /* ---------------------------------------
    Fonksiyon Prototipleri

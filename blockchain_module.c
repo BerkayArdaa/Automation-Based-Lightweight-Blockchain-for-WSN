@@ -8,8 +8,7 @@
 #include <stdint.h>
 
 /* --- Liste ve bellek tanımları en üste taşındı --- */
-list_t blockchain;
-
+LIST(blockchain);   // ✔ doğru
 MEMB(block_mem, block_t, MAX_BLOCKS);
 
 /* ===========================================================
