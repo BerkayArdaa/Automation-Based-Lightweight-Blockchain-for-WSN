@@ -7,12 +7,25 @@
 #include "random.h"
 #include <stdint.h>
 
-/* --- Liste ve bellek tanımları en üste taşındı --- */
-LIST(blockchain);   // ✔ doğru
+/* --- Liste ve Bellek Tanımları --- */
+LIST(blockchain);
 MEMB(block_mem, block_t, MAX_BLOCKS);
 
+/* --- YENİ: Buffer (Havuz) Yapısı ve Global Değişkenler --- */
+/* Verileri anında hashlemek yerine burada biriktireceğiz (Energy Saving) */
+typedef struct {
+  int temp;
+  char sender[10]; // Örn: "Node"
+} data_buffer_t;
+
+static data_buffer_t buffer[MAX_BUFFER_SIZE];
+static int buffer_count = 0;
+
+/* Otomasyon katmanının okuyacağı güvenlik bayrağı */
+uint8_t security_alert_flag = 0;
+
 /* ===========================================================
-   Basit SHA-256 implementasyonu (harici kütüphane gerektirmez)
+   Basit SHA-256 implementasyonu (Aynen korundu)
    =========================================================== */
 #define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))
 #define CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
@@ -68,7 +81,6 @@ static void compute_sha256(const char *input, char *output) {
   while(datalen < 56) data[datalen++] = 0x00;
   bitlen += (uint64_t)len * 8ULL;
 
-  /* high bits */
   data[56] = (uint8_t)((bitlen >> 56) & 0xFF);
   data[57] = (uint8_t)((bitlen >> 48) & 0xFF);
   data[58] = (uint8_t)((bitlen >> 40) & 0xFF);
@@ -96,15 +108,74 @@ static void compute_sha256(const char *input, char *output) {
   output[64] = '\0';
 }
 
+/* ===========================================================
+   Blockchain Fonksiyonları
+   =========================================================== */
+
 void blockchain_init(void) {
   memb_init(&block_mem);
   list_init(blockchain);
-  printf("[[B] Blockchain] Initialized\n");
+  
+  // Buffer ve güvenlik bayrağını sıfırla
+  buffer_count = 0;
+  security_alert_flag = 0;
+  
+  printf("[[B] Blockchain] Initialized (Aggregation Mode)\n");
+}
+
+/* --- YENİ: Veriyi havuza atma fonksiyonu (Energy Saving) --- */
+void blockchain_buffer_data(int temperature, const char *sender_id) {
+  if(buffer_count < MAX_BUFFER_SIZE) {
+    buffer[buffer_count].temp = temperature;
+    // sender_id'yi kopyala (güvenlik için boyut sınırlamalı)
+    strncpy(buffer[buffer_count].sender, sender_id, 9);
+    buffer[buffer_count].sender[9] = '\0'; // Null terminator garantisi
+    
+    buffer_count++;
+    // Burada log basmıyoruz, gereksiz işlem yapmıyoruz.
+  } else {
+    printf("[[B] Buffer Full!] Dropping data to save memory.\n");
+  }
+}
+
+/* --- YENİ: Toplu Bloklama (Aggregation / Merkle Root Simulation) --- */
+void blockchain_commit_batch(void) {
+  if(buffer_count == 0) return; // İşlenecek veri yok
+
+  // Tüm verileri tek bir stringde birleştir (Aggregation)
+  char aggregated_data[64] = {0}; // block_t.data boyutu kadar
+  char temp_str[16];
+
+  // Basit birleştirme: "22|25|21" şeklinde
+  for(int i = 0; i < buffer_count; i++) {
+    snprintf(temp_str, sizeof(temp_str), "%d|", buffer[i].temp);
+    
+    // Veri alanının taşmaması için kontrol
+    if(strlen(aggregated_data) + strlen(temp_str) < 63) {
+      strcat(aggregated_data, temp_str);
+    } else {
+      break; // Yer kalmadıysa döngüden çık
+    }
+  }
+
+  // Tek seferde blok oluştur
+  blockchain_add_block(aggregated_data, clock_seconds());
+  
+  printf("[[TX] Batch Committed] %d transactions aggregated into one block.\n", buffer_count);
+
+  // Havuzu temizle, yeni verilere yer aç
+  buffer_count = 0;
 }
 
 void blockchain_add_block(char *data, uint32_t timestamp) {
   block_t *b = memb_alloc(&block_mem);
-  if(b == NULL) return;
+  
+  // Bellek doluysa en eski bloğu (genesis hariç) silip yer açmayı deneyebiliriz
+  // Şimdilik sadece hata verip çıkıyoruz.
+  if(b == NULL) {
+    printf("[[B] Error] Memory full, cannot add block!\n");
+    return;
+  }
 
   snprintf(b->data, sizeof(b->data), "%s", data);
   b->timestamp = timestamp;
@@ -155,10 +226,7 @@ void blockchain_verify_chain(void) {
 }
 
 /* -----------------------------------------------------------
-   Tamper fonksiyonu devre dışı bırakıldı (varsayılan temiz davranış).
-   Eğer test amaçlı rastgele tahribat yapmak istersen, derlemeye
-   ENABLE_TAMPER tanımı ile ekleyebilirsin:
-     make CFLAGS="-DENABLE_TAMPER" TARGET=cooja
+   Tamper (Saldırı Simülasyonu) Fonksiyonu
    ----------------------------------------------------------- */
 #ifdef ENABLE_TAMPER
 void blockchain_tamper_random_block(void) {
@@ -190,7 +258,7 @@ void blockchain_tamper_random_block(void) {
 }
 #else
 void blockchain_tamper_random_block(void) {
-  /* Güvenlik nedeniyle devre dışı — üretim/sınama dışında kullanılmaz. */
+  /* Güvenlik nedeniyle devre dışı */
   printf("[TAMPER] Disabled in this build.\n");
 }
 #endif

@@ -4,6 +4,7 @@
 #include "dev/leds.h"
 #include "random.h"
 #include "string.h"
+#include <stdio.h> /* snprintf için gerekli */
 
 #include "blockchain_module.h"
 #include "automation_layer.h"
@@ -28,29 +29,49 @@ static void udp_rx_callback(struct simple_udp_connection *c,
                             const uint8_t *data,
                             uint16_t datalen) {
 
-  /* 1️⃣ Öncelikle gelen verinin "TAMPER" olup olmadığını kontrol et */
+  /* ----------------------------------------------------------------
+     1. GÜVENLİK KONTROLÜ (Proposal: Attacks Detection)
+     Eğer "TAMPER" mesajı gelirse, güvenlik bayrağını kaldır ve 
+     Otomasyonu acil tetikle.
+     ---------------------------------------------------------------- */
   if(datalen >= 6 && strncmp((const char *)data, "TAMPER", 6) == 0) {
-    LOG_WARN("[CH] Received TAMPER command from ");
+    LOG_WARN("[CH] ⚠️ SECURITY ALERT: TAMPER command received from ");
     LOG_INFO_6ADDR(sender_addr);
     LOG_INFO_("\n");
 
-    /* Simüle edilmiş saldırı: zinciri boz */
+    /* 1. Otomasyon katmanına haber ver (Bayrağı kaldır) */
+    security_alert_flag = 1;
+
+    /* 2. Otomasyonu beklemeden hemen çalıştır (Acil Durum) */
+    automation_check_conditions();
+
+    /* 3. Simülasyon görseli için: Zinciri boz (Opsiyonel, test için) */
     blockchain_tamper_random_block();
-    return; // saldırı tespit edildi, normal veri işleme yapılmaz
+    
+    return; // Saldırı paketi havuza atılmaz, fonksiyon biter.
   }
 
-  /* 2️⃣ Eğer normal sıcaklık verisiyse işleme devam et */
+  /* ----------------------------------------------------------------
+     2. NORMAL VERİ İŞLEME (Proposal: Aggregation & Energy Saving)
+     Veriyi hemen bloklama! Havuza (Buffer) at.
+     ---------------------------------------------------------------- */
   int temp;
   memcpy(&temp, data, sizeof(temp));
-  LOG_INFO("Received temperature: %d°C from ", temp);
-  LOG_INFO_6ADDR(sender_addr);
-  LOG_INFO_("\n");
+  
+  /* Gönderen Node ID'sini stringe çevir (Örn: "Node-52") */
+  /* IPv6 adresinin son byte'ı genelde Node ID'dir */
+  char sender_id[16];
+  snprintf(sender_id, sizeof(sender_id), "Node-%u", sender_addr->u8[15]);
 
-  char data_str[32];
-  snprintf(data_str, sizeof(data_str), "%d", temp);
+  LOG_INFO("Received Data: %d°C from %s. Buffering for Automation...\n", temp, sender_id);
 
-  /* Blockchain'e yeni blok ekle */
-  blockchain_add_block(data_str, clock_seconds());
+  /* --- KRİTİK DEĞİŞİKLİK --- */
+  /* Eski: blockchain_add_block(...) -> Kaldırıldı (Enerji israfı) */
+  /* Yeni: Veriyi havuza ekle */
+  blockchain_buffer_data(temp, sender_id);
+
+  /* Otomasyon için işlem sayacını artır */
+  automation_new_transaction();
 
   leds_toggle(LEDS_GREEN);
 }
@@ -61,7 +82,7 @@ static void udp_rx_callback(struct simple_udp_connection *c,
 PROCESS_THREAD(wsn_project_process, ev, data)
 {
   static struct etimer timer;
-  static struct etimer verify_timer; // doğrulama için ikinci zamanlayıcı
+  static struct etimer verify_timer; // Doğrulama için ikinci zamanlayıcı
 
   PROCESS_BEGIN();
 
@@ -78,16 +99,19 @@ PROCESS_THREAD(wsn_project_process, ev, data)
   while(1) {
     PROCESS_WAIT_EVENT();
 
-    /* 10 saniyede bir otomasyon kontrolü */
+    /* 10 saniyede bir otomasyon kontrolü (Real-time conditions check) */
     if(etimer_expired(&timer)) {
-      LOG_INFO("[[A] Automation] Checking conditions...\n");
+      /* Log kirliliğini önlemek için sadece işlem varsa log basılabilir,
+         ama şimdilik akışı görmek için bırakıyoruz. */
+      // LOG_INFO("[[A] Automation] Checking conditions...\n");
       automation_check_conditions();
       etimer_reset(&timer);
     }
 
     /* 30 saniyede bir blockchain doğrulama */
     if(etimer_expired(&verify_timer)) {
-      LOG_INFO("[[B] Blockchain] Periodic verification running...\n");
+      /* Doğrulama sadece zincirde blok varsa anlamlıdır */
+      // LOG_INFO("[[B] Blockchain] Periodic verification running...\n");
       blockchain_verify_chain();
       etimer_reset(&verify_timer);
     }
