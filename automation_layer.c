@@ -10,7 +10,7 @@
 
 static uint8_t pending_transactions = 0;
 static uint8_t node_energy = 90; // başlangıç enerjisi
-
+// Ahmet Test comment!
 void automation_check_conditions(void) {
 
   // Enerjiyi yavaşça düşür (örnek olarak)
