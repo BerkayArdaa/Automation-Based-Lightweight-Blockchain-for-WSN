@@ -8,6 +8,16 @@
 
 #include "blockchain_module.h"
 #include "automation_layer.h"
+#include <stdint.h>
+
+typedef struct __attribute__((packed)) {
+  uint32_t seq;
+  int16_t temp;
+} sensor_payload_t;
+
+/* Node başına son seq (0..255) */
+static uint32_t last_seq[256];
+
 
 #define LOG_MODULE "WSN"
 #define LOG_LEVEL LOG_LEVEL_INFO
@@ -27,50 +37,63 @@ static void udp_rx_callback(struct simple_udp_connection *c,
                             const uip_ipaddr_t *receiver_addr,
                             uint16_t receiver_port,
                             const uint8_t *data,
-                            uint16_t datalen) {
-
-  /* ----------------------------------------------------------------
-     1. GÜVENLİK KONTROLÜ (Proposal: Attacks Detection)
-     Eğer "TAMPER" mesajı gelirse, güvenlik bayrağını kaldır ve 
-     Otomasyonu acil tetikle.
-     ---------------------------------------------------------------- */
+                            uint16_t datalen)
+{
+  /* 1) Manual saldırı testi (TAMPER komutu) - sende vardı, kalsın */
   if(datalen >= 6 && strncmp((const char *)data, "TAMPER", 6) == 0) {
     LOG_WARN("[CH] ⚠️ SECURITY ALERT: TAMPER command received from ");
     LOG_INFO_6ADDR(sender_addr);
     LOG_INFO_("\n");
 
-    /* 1. Otomasyon katmanına haber ver (Bayrağı kaldır) */
     security_alert_flag = 1;
-
-    /* 2. Otomasyonu beklemeden hemen çalıştır (Acil Durum) */
     automation_check_conditions();
+    blockchain_tamper_random_block();   // test amaçlı
 
-    /* 3. Simülasyon görseli için: Zinciri boz (Opsiyonel, test için) */
-    blockchain_tamper_random_block();
-    
-    return; // Saldırı paketi havuza atılmaz, fonksiyon biter.
+    return;
   }
 
-  /* ----------------------------------------------------------------
-     2. NORMAL VERİ İŞLEME (Proposal: Aggregation & Energy Saving)
-     Veriyi hemen bloklama! Havuza (Buffer) at.
-     ---------------------------------------------------------------- */
-  int temp;
-  memcpy(&temp, data, sizeof(temp));
-  
-  /* Gönderen Node ID'sini stringe çevir (Örn: "Node-52") */
-  /* IPv6 adresinin son byte'ı genelde Node ID'dir */
+  /* 2) Normal sensör paketi: seq + temp bekliyoruz */
+  if(datalen < sizeof(sensor_payload_t)) {
+    LOG_WARN("[CH] Invalid payload size=%u (expected=%u) from ",
+             datalen, (unsigned)sizeof(sensor_payload_t));
+    LOG_INFO_6ADDR(sender_addr);
+    LOG_INFO_("\n");
+    return;
+  }
+
+  sensor_payload_t p;
+  memcpy(&p, data, sizeof(p));
+
+  /* Node ID: IPv6 son byte (sen de bunu kullanıyorsun) */
+  uint8_t nid = sender_addr->u8[15];
+
+  /* 3) REPLAY DETECTION */
+  if(last_seq[nid] != 0 && p.seq <= last_seq[nid]) {
+    LOG_WARN("[A][SECURITY] Replay detected from Node-%u (seq=%lu last=%lu). Forcing security alert.\n",
+             nid, (unsigned long)p.seq, (unsigned long)last_seq[nid]);
+
+    security_alert_flag = 1;
+
+    /* acil commit istiyorsan: */
+    automation_check_conditions();
+
+    /* replay paketi buffer’a girmez */
+    return;
+  }
+
+  /* geçerli paket → son seq güncelle */
+  last_seq[nid] = p.seq;
+
+  /* 4) Buffer + automation (mevcut akışın) */
   char sender_id[16];
-  snprintf(sender_id, sizeof(sender_id), "Node-%u", sender_addr->u8[15]);
+  snprintf(sender_id, sizeof(sender_id), "Node-%u", nid);
 
-  LOG_INFO("Received Data: %d°C from %s. Buffering for Automation...\n", temp, sender_id);
+  int temp = (int)p.temp;
 
-  /* --- KRİTİK DEĞİŞİKLİK --- */
-  /* Eski: blockchain_add_block(...) -> Kaldırıldı (Enerji israfı) */
-  /* Yeni: Veriyi havuza ekle */
+  LOG_INFO("Received Data: %d°C (seq=%lu) from %s. Buffering for Automation...\n",
+           temp, (unsigned long)p.seq, sender_id);
+
   blockchain_buffer_data(temp, sender_id);
-
-  /* Otomasyon için işlem sayacını artır */
   automation_new_transaction();
 
   leds_toggle(LEDS_GREEN);

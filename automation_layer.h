@@ -16,6 +16,8 @@
  */
 void automation_check_conditions(void);
 
+/* Automation layer ve CH tarafından okunacak güvenlik bayrağı */
+extern uint8_t security_alert_flag;
 
 /**
  * @brief Called when a new transaction arrives.

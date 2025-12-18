@@ -14,6 +14,18 @@ static uint8_t pending_transactions = 0;
 static uint8_t node_energy = 90; // Başlangıç enerjisi
 
 void automation_check_conditions(void) {
+  if(security_alert_flag == 1) {
+  LOG_WARN("[⚠️ Automation] SECURITY ALERT DETECTED! Forcing immediate batch commit...\n");
+
+  blockchain_commit_batch();
+
+  /* buffer sayacı/tx reset (sende nasıl tutuyorsan) */
+  pending_transactions = 0;
+
+  security_alert_flag = 0;
+  return;
+}
+
     /* =========================================================
    * REAL-TIME ENERGY (Energest proxy)
    * Not: Bu fiziksel batarya modeli değil, Energest sayaçlarından
