@@ -13,5 +13,7 @@ TARGET = cooja
 # === Derleme İşlemi ===
 all: $(CONTIKI_PROJECT)
 
+MODULES += os/services/simple-energest
+
 include $(CONTIKI)/Makefile.include
 

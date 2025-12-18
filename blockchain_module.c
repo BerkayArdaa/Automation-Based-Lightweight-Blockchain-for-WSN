@@ -10,16 +10,55 @@
 /* --- Liste ve Bellek Tanımları --- */
 LIST(blockchain);
 MEMB(block_mem, block_t, MAX_BLOCKS);
+static void compute_sha256(const char *input, char *output);
+
+static uint8_t block_count = 0;
+
 
 /* --- YENİ: Buffer (Havuz) Yapısı ve Global Değişkenler --- */
 /* Verileri anında hashlemek yerine burada biriktireceğiz (Energy Saving) */
 typedef struct {
   int temp;
-  char sender[10]; // Örn: "Node"
+  char sender[10];
+  char leaf_hash[65]; // SHA-256(temp|sender|ts)
 } data_buffer_t;
+
 
 static data_buffer_t buffer[MAX_BUFFER_SIZE];
 static int buffer_count = 0;
+static void compute_merkle_root(char out[65]) {
+  if(buffer_count <= 0) {
+    snprintf(out, 65, "0");
+    return;
+  }
+
+  char level[MAX_BUFFER_SIZE][65];
+  int n = buffer_count;
+
+  for(int i = 0; i < n; i++) {
+    snprintf(level[i], sizeof(level[i]), "%s", buffer[i].leaf_hash);
+  }
+
+  while(n > 1) {
+    int next_n = (n + 1) / 2;
+    char next_level[MAX_BUFFER_SIZE][65];
+
+    for(int i = 0; i < next_n; i++) {
+      char concat[130];
+      const char *left  = level[i * 2];
+      const char *right = (i * 2 + 1 < n) ? level[i * 2 + 1] : level[i * 2]; // tekse duplicate
+      snprintf(concat, sizeof(concat), "%s%s", left, right);
+      compute_sha256(concat, next_level[i]);
+    }
+
+    for(int i = 0; i < next_n; i++) {
+      snprintf(level[i], sizeof(level[i]), "%s", next_level[i]);
+    }
+    n = next_n;
+  }
+
+  snprintf(out, 65, "%s", level[0]);
+}
 
 /* Otomasyon katmanının okuyacağı güvenlik bayrağı */
 uint8_t security_alert_flag = 0;
@@ -127,48 +166,69 @@ void blockchain_init(void) {
 void blockchain_buffer_data(int temperature, const char *sender_id) {
   if(buffer_count < MAX_BUFFER_SIZE) {
     buffer[buffer_count].temp = temperature;
-    // sender_id'yi kopyala (güvenlik için boyut sınırlamalı)
+
     strncpy(buffer[buffer_count].sender, sender_id, 9);
-    buffer[buffer_count].sender[9] = '\0'; // Null terminator garantisi
-    
+    buffer[buffer_count].sender[9] = '\0';
+
+    char leaf_in[64];
+    snprintf(leaf_in, sizeof(leaf_in), "%d|%s|%lu",
+             temperature, buffer[buffer_count].sender, (unsigned long)clock_seconds());
+    compute_sha256(leaf_in, buffer[buffer_count].leaf_hash);
+
     buffer_count++;
-    // Burada log basmıyoruz, gereksiz işlem yapmıyoruz.
   } else {
     printf("[[B] Buffer Full!] Dropping data to save memory.\n");
   }
 }
 
+
 /* --- YENİ: Toplu Bloklama (Aggregation / Merkle Root Simulation) --- */
-void blockchain_commit_batch(void) {
-  if(buffer_count == 0) return; // İşlenecek veri yok
-
-  // Tüm verileri tek bir stringde birleştir (Aggregation)
-  char aggregated_data[64] = {0}; // block_t.data boyutu kadar
-  char temp_str[16];
-
-  // Basit birleştirme: "22|25|21" şeklinde
-  for(int i = 0; i < buffer_count; i++) {
-    snprintf(temp_str, sizeof(temp_str), "%d|", buffer[i].temp);
-    
-    // Veri alanının taşmaması için kontrol
-    if(strlen(aggregated_data) + strlen(temp_str) < 63) {
-      strcat(aggregated_data, temp_str);
-    } else {
-      break; // Yer kalmadıysa döngüden çık
-    }
+void blockchain_commit_batch() {
+  if(buffer_count == 0) {
+    printf("No data to commit.\n");
+    return;
   }
 
-  // Tek seferde blok oluştur
-  blockchain_add_block(aggregated_data, clock_seconds());
-  
-  printf("[[TX] Batch Committed] %d transactions aggregated into one block.\n", buffer_count);
+  // 1) Aggregated data hazırla
+  char aggregated_data[64] = {0};
 
-  // Havuzu temizle, yeni verilere yer aç
+  for(int i = 0; i < buffer_count; i++) {
+    char temp_str[8];
+    snprintf(temp_str, sizeof(temp_str), "%d|", buffer[i].temp);
+    strncat(aggregated_data, temp_str,
+            sizeof(aggregated_data) - strlen(aggregated_data) - 1);
+  }
+
+  // 2) Merkle root'u HESAPLA (buffer'ı temizlemeden önce!)
+  char merkle_root[65];
+  compute_merkle_root(merkle_root);
+
+  // 3) Bu batch'te kaç tx var? (buffer_count reset olmadan yakala)
+  uint8_t tx_count = (uint8_t)buffer_count;
+
+  // 4) Yeni imzaya göre block ekle
+  blockchain_add_block(aggregated_data, merkle_root, tx_count, clock_seconds());
+
+  // 5) Buffer'ı temizle
   buffer_count = 0;
 }
 
-void blockchain_add_block(char *data, uint32_t timestamp) {
+
+void blockchain_add_block(char *data, const char *merkle_root, uint8_t tx_count, uint32_t timestamp)
+ {
+ if(block_count >= MAX_BLOCKS) {
+  block_t *old = list_head(blockchain);
+  if(old != NULL) {
+    list_remove(blockchain, old);
+    memb_free(&block_mem, old);
+    block_count--;
+    printf("[[B] GC] Oldest block freed to keep memory bounded.\n");
+  }
+}
+
+
   block_t *b = memb_alloc(&block_mem);
+  
   
   // Bellek doluysa en eski bloğu (genesis hariç) silip yer açmayı deneyebiliriz
   // Şimdilik sadece hata verip çıkıyoruz.
@@ -177,8 +237,10 @@ void blockchain_add_block(char *data, uint32_t timestamp) {
     return;
   }
 
-  snprintf(b->data, sizeof(b->data), "%s", data);
-  b->timestamp = timestamp;
+    snprintf(b->merkle_root, sizeof(b->merkle_root), "%s",
+         (merkle_root != NULL) ? merkle_root : "0");
+b->tx_count = tx_count;
+
 
   block_t *last_block = list_tail(blockchain);
   if(last_block != NULL) {
@@ -188,13 +250,20 @@ void blockchain_add_block(char *data, uint32_t timestamp) {
   }
 
   char combined[256];
-  snprintf(combined, sizeof(combined), "%s%s%lu",
-           b->data, b->prev_hash, (unsigned long)b->timestamp);
+snprintf(combined, sizeof(combined), "%s%s%s%u%lu",
+         b->data,
+         b->merkle_root,
+         b->prev_hash,
+         (unsigned)b->tx_count,
+         (unsigned long)b->timestamp);
 
-  compute_sha256(combined, b->hash);
+compute_sha256(combined, b->hash);
+
   list_add(blockchain, b);
+ block_count++;
+  printf("[[TX] Blockchain] Block added: %s | tx=%u | merkle=%s | hash=%s\n",
+       b->data, b->tx_count, b->merkle_root, b->hash);
 
-  printf("[[TX] Blockchain] Block added: %s | Hash: %s\n", b->data, b->hash);
 }
 
 void blockchain_verify_chain(void) {
@@ -205,8 +274,13 @@ void blockchain_verify_chain(void) {
 
   printf("=== Blockchain Verification ===\n");
   while(b != NULL) {
-    snprintf(combined, sizeof(combined), "%s%s%lu",
-             b->data, b->prev_hash, (unsigned long)b->timestamp);
+    snprintf(combined, sizeof(combined), "%s%s%s%u%lu",
+         b->data,
+         b->merkle_root,
+         b->prev_hash,
+         (unsigned)b->tx_count,
+         (unsigned long)b->timestamp);
+
     compute_sha256(combined, recomputed_hash);
 
     if(strcmp(b->hash, recomputed_hash) != 0) {

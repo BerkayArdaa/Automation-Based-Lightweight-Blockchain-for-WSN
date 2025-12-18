@@ -3,7 +3,7 @@
 #include "sys/log.h"
 #include "random.h"
 #include "dev/leds.h"
-#include "automation_layer.h"
+
 
 #define LOG_MODULE "Sensor"
 #define LOG_LEVEL LOG_LEVEL_INFO
@@ -34,7 +34,7 @@ PROCESS_THREAD(sensor_node_process, ev, data)
     simple_udp_sendto(&udp_conn, &temperature, sizeof(temperature), &addr);
 
     leds_toggle(LEDS_GREEN);
-    automation_new_transaction(); // Blockchain sistemine gönderim bilgisi
+    
   }
 
   PROCESS_END();

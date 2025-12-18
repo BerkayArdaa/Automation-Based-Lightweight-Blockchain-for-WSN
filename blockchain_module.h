@@ -7,19 +7,23 @@
 #include "sys/log.h"
 #include <stdint.h>
 
-#define MAX_BLOCKS 50
+
 #define MAX_BUFFER_SIZE 20
+#define MAX_BLOCKS 20
 
 /* ---------------------------------------
    Basit Blockchain Blok Yapısı
    --------------------------------------- */
 typedef struct block {
-  struct block *next;     // Zincirdeki bir sonraki blok
-  char data[64];          // Sensör veya özetlenmiş (aggregated) veri
-  char hash[65];          // SHA-256 hash
-  char prev_hash[65];     // Önceki bloğun hash değeri
-  uint32_t timestamp;     // Oluşturulma zamanı
+  struct block *next;
+  char data[64];          // Aggregated data
+  char merkle_root[65];   // Merkle root (hex)
+  uint8_t tx_count;       // Bu blokta kaç ölçüm birikti
+  char hash[65];
+  char prev_hash[65];
+  uint32_t timestamp;
 } block_t;
+
 
 /* 
    HATA DÜZELTİLDİ: 
@@ -47,7 +51,8 @@ void blockchain_init(void);
  * @brief (DÜŞÜK SEVİYE) Doğrudan blok oluşturur.
  *        Genellikle 'commit_batch' tarafından dahili kullanılır.
  */
-void blockchain_add_block(char *data, uint32_t timestamp);
+void blockchain_add_block(char *data, const char *merkle_root, uint8_t tx_count, uint32_t timestamp);
+
 
 /**
  * @brief (YENİ) Veriyi hemen bloklamaz, havuza atar.
