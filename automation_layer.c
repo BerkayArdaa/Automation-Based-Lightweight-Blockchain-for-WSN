@@ -11,20 +11,24 @@
 #define LOG_LEVEL LOG_LEVEL_INFO
 
 static uint8_t pending_transactions = 0;
-static uint8_t node_energy = 90; // Başlangıç enerjisi
+/* NOTE: This is a *relative* energy budget (0..100) driven by Energest.
+ * It is not a physical battery model, but allows the automation logic to
+ * adapt to node activity (CPU/LPM/TX/RX) in Cooja.
+ */
+static uint8_t node_energy = 100; // Start full
 
 void automation_check_conditions(void) {
+  /* ------------------------------------------------------------
+   * 1) SECURITY FIRST
+   * If an alert is active, bypass energy checks and commit now.
+   * ------------------------------------------------------------ */
   if(security_alert_flag == 1) {
-  LOG_WARN("[⚠️ Automation] SECURITY ALERT DETECTED! Forcing immediate batch commit...\n");
-
-  blockchain_commit_batch();
-
-  /* buffer sayacı/tx reset (sende nasıl tutuyorsan) */
-  pending_transactions = 0;
-
-  security_alert_flag = 0;
-  return;
-}
+    LOG_WARN("[⚠️ Automation] SECURITY ALERT DETECTED! Forcing immediate batch commit...\n");
+    blockchain_commit_batch();
+    pending_transactions = 0;
+    security_alert_flag = 0;
+    return;
+  }
 
     /* =========================================================
    * REAL-TIME ENERGY (Energest proxy)
@@ -53,9 +57,16 @@ void automation_check_conditions(void) {
   cost += (d_cpu)      / (RTIMER_SECOND / 16 + 1);
   cost += (d_lpm)      / (RTIMER_SECOND / 64 + 1);
 
-  /* 🔥 Ölçekleme: yoksa ilk ölçümde E=0 olur */
+  /* Scale down so energy decreases gradually in simulation */
   cost = cost / 50;
   if(cost == 0) cost = 1;
+
+  /* Update relative energy budget (clamped to 0..100) */
+  if(node_energy > cost) {
+    node_energy = (uint8_t)(node_energy - (uint8_t)cost);
+  } else {
+    node_energy = 0;
+  }
 
 
     LOG_INFO("[A][EnergyRaw] d_cpu=%lu d_lpm=%lu d_tx=%lu d_rx=%lu | cost_raw=%lu\n",
@@ -66,23 +77,6 @@ void automation_check_conditions(void) {
 
 
 
-
-  /* ----------------------------------------------------------------
-     1. GÜVENLİK KONTROLÜ (Possible Attacks)
-     Eğer blockchain modülünden veya callback'ten bir saldırı uyarısı
-     geldiyse, enerjiye bakmaksızın ACİL blok oluştur.
-     ---------------------------------------------------------------- */
-  if(security_alert_flag == 1) {
-    LOG_WARN("[⚠️ Automation] SECURITY ALERT DETECTED! Forcing immediate block creation...\n");
-    
-    // Havuzdaki (Buffer) tüm verileri hemen blokla ve güvene al
-    blockchain_commit_batch();
-    
-    // Bayrağı ve sayacı sıfırla
-    security_alert_flag = 0;
-    pending_transactions = 0;
-    return; // Acil işlem yapıldığı için normal akışa devam etme
-  }
 
   /* ----------------------------------------------------------------
      2. NORMAL KOŞULLAR (Energy Saving & Aggregation)

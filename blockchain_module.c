@@ -237,9 +237,18 @@ void blockchain_add_block(char *data, const char *merkle_root, uint8_t tx_count,
     return;
   }
 
-    snprintf(b->merkle_root, sizeof(b->merkle_root), "%s",
-         (merkle_root != NULL) ? merkle_root : "0");
-b->tx_count = tx_count;
+  /* --------------------------------------------------------
+   * FIX: Initialize block fields before hashing.
+   * Previously, b->data and b->timestamp were uninitialized
+   * but were used in the hash input, causing non-deterministic
+   * hashes and false "tamper" detections during verification.
+   * -------------------------------------------------------- */
+  snprintf(b->data, sizeof(b->data), "%s", (data != NULL) ? data : "");
+  b->timestamp = timestamp;
+
+  snprintf(b->merkle_root, sizeof(b->merkle_root), "%s",
+           (merkle_root != NULL) ? merkle_root : "0");
+  b->tx_count = tx_count;
 
 
   block_t *last_block = list_tail(blockchain);
@@ -250,19 +259,19 @@ b->tx_count = tx_count;
   }
 
   char combined[256];
-snprintf(combined, sizeof(combined), "%s%s%s%u%lu",
-         b->data,
-         b->merkle_root,
-         b->prev_hash,
-         (unsigned)b->tx_count,
-         (unsigned long)b->timestamp);
+  snprintf(combined, sizeof(combined), "%s%s%s%u%lu",
+           b->data,
+           b->merkle_root,
+           b->prev_hash,
+           (unsigned)b->tx_count,
+           (unsigned long)b->timestamp);
 
-compute_sha256(combined, b->hash);
+  compute_sha256(combined, b->hash);
 
   list_add(blockchain, b);
  block_count++;
-  printf("[[TX] Blockchain] Block added: %s | tx=%u | merkle=%s | hash=%s\n",
-       b->data, b->tx_count, b->merkle_root, b->hash);
+  printf("[[TX] Blockchain] Block added: %s | ts=%lu | tx=%u | merkle=%s | hash=%s\n",
+         b->data, (unsigned long)b->timestamp, b->tx_count, b->merkle_root, b->hash);
 
 }
 
