@@ -39,6 +39,15 @@ static void udp_rx_callback(struct simple_udp_connection *c,
                             const uint8_t *data,
                             uint16_t datalen)
 {
+  /* Node ID: IPv6 son byte */
+  uint8_t nid = sender_addr->u8[15];
+
+  /* 0) ELIMINATION: ignore traffic from blacklisted nodes */
+  if(automation_is_blacklisted(nid)) {
+    LOG_WARN("[CH] DROP: Node-%u is BLACKLISTED (trust=%u)\n", nid, automation_get_trust(nid));
+    return;
+  }
+
   /* 1) Manual saldırı testi (TAMPER komutu) - sende vardı, kalsın */
   if(datalen >= 6 && strncmp((const char *)data, "TAMPER", 6) == 0) {
     LOG_WARN("[CH] ⚠️ SECURITY ALERT: TAMPER command received from ");
@@ -49,6 +58,15 @@ static void udp_rx_callback(struct simple_udp_connection *c,
     automation_check_conditions();
     blockchain_tamper_random_block();   // test amaçlı
 
+    /* Trust update for tamper command */
+    uint8_t newly_blacklisted = automation_trust_event(nid, TRUST_EVENT_TAMPER);
+    if(newly_blacklisted) {
+      char sender_id[16];
+      snprintf(sender_id, sizeof(sender_id), "Node-%u", nid);
+      blockchain_buffer_data(-(1000 + (int)nid), sender_id);
+      automation_new_transaction();
+    }
+
     return;
   }
 
@@ -58,28 +76,37 @@ static void udp_rx_callback(struct simple_udp_connection *c,
              datalen, (unsigned)sizeof(sensor_payload_t));
     LOG_INFO_6ADDR(sender_addr);
     LOG_INFO_("\n");
+    automation_trust_event(nid, TRUST_EVENT_INVALID);
     return;
   }
 
   sensor_payload_t p;
   memcpy(&p, data, sizeof(p));
 
-  /* Node ID: IPv6 son byte (sen de bunu kullanıyorsun) */
-  uint8_t nid = sender_addr->u8[15];
 
-  /* 3) REPLAY DETECTION */
+    /* 3) REPLAY DETECTION */
   if(last_seq[nid] != 0 && p.seq <= last_seq[nid]) {
     LOG_WARN("[A][SECURITY] Replay detected from Node-%u (seq=%lu last=%lu). Forcing security alert.\n",
-             nid, (unsigned long)p.seq, (unsigned long)last_seq[nid]);
+         (unsigned)nid,
+         (unsigned long)p.seq,
+         (unsigned long)last_seq[nid]);
+
 
     security_alert_flag = 1;
 
-    /* acil commit istiyorsan: */
-    automation_check_conditions();
+    uint8_t newly_blacklisted = automation_trust_event(nid, TRUST_EVENT_REPLAY);
+    if(newly_blacklisted) {
+      char sender_id[16];
+      snprintf(sender_id, sizeof(sender_id), "Node-%u", nid);
+      blockchain_buffer_data(-(1000 + (int)nid), sender_id);
+      automation_new_transaction();
+    }
 
-    /* replay paketi buffer’a girmez */
+    automation_check_conditions();
     return;
   }
+
+  automation_trust_event(nid, TRUST_EVENT_GOOD);
 
   /* geçerli paket → son seq güncelle */
   last_seq[nid] = p.seq;
@@ -111,6 +138,7 @@ PROCESS_THREAD(wsn_project_process, ev, data)
 
   LOG_INFO("[[B] Blockchain] Initializing blockchain module...\n");
   blockchain_init();
+  automation_trust_init();
 
   /* UDP bağlantısını başlat */
   simple_udp_register(&udp_conn, UDP_PORT, NULL, UDP_PORT, udp_rx_callback);

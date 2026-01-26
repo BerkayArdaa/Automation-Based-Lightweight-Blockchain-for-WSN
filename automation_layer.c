@@ -4,6 +4,7 @@
 #include "sys/log.h"
 #include "random.h"
 #include <stdio.h>
+#include <stdint.h>
 #include "sys/energest.h"
 #include "sys/rtimer.h"
 
@@ -12,6 +13,84 @@
 
 static uint8_t pending_transactions = 0;
 static uint8_t node_energy = 90; // Başlangıç enerjisi
+
+/* ===================== TRUST TABLES (Attacker Identification) ===================== */
+static uint8_t trust_score[256];
+static uint8_t bad_streak[256];
+static uint8_t blacklisted[256];
+static uint8_t trust_inited = 0;
+
+void automation_trust_init(void) {
+  if(trust_inited) return;
+  for(int i = 0; i < 256; i++) {
+    trust_score[i] = TRUST_SCALE;  /* start trusted */
+    bad_streak[i] = 0;
+    blacklisted[i] = 0;
+  }
+  trust_inited = 1;
+  LOG_INFO("[Trust] initialized (score=100 for all nodes)\n");
+}
+
+uint8_t automation_is_blacklisted(uint8_t node_id) {
+  return blacklisted[node_id] ? 1 : 0;
+}
+
+uint8_t automation_get_trust(uint8_t node_id) {
+  return trust_score[node_id];
+}
+
+static uint8_t penalty_from_event(trust_event_t ev) {
+  switch(ev) {
+    case TRUST_EVENT_REPLAY:  return TRUST_PENALTY_REPLAY;
+    case TRUST_EVENT_TAMPER:  return TRUST_PENALTY_TAMPER;
+    case TRUST_EVENT_INVALID: return TRUST_PENALTY_INVALID;
+    case TRUST_EVENT_GOOD:
+    default: return 0;
+  }
+}
+
+uint8_t automation_trust_event(uint8_t node_id, trust_event_t ev) {
+  if(!trust_inited) automation_trust_init();
+
+  if(blacklisted[node_id]) {
+    return 0; /* already eliminated */
+  }
+
+  uint8_t pen = penalty_from_event(ev);
+  uint8_t behavior = (pen >= TRUST_SCALE) ? 0 : (uint8_t)(TRUST_SCALE - pen);
+
+  uint16_t updated = (uint16_t)TRUST_ALPHA * (uint16_t)trust_score[node_id]
+                   + (uint16_t)(TRUST_SCALE - TRUST_ALPHA) * (uint16_t)behavior;
+  trust_score[node_id] = (uint8_t)(updated / TRUST_SCALE);
+
+  if(ev == TRUST_EVENT_GOOD) {
+    bad_streak[node_id] = 0;
+  } else {
+    if(trust_score[node_id] <= TRUST_ELIMINATE_THRESHOLD) {
+      if(bad_streak[node_id] < 255) bad_streak[node_id]++;
+    } else {
+      if(bad_streak[node_id] > 0) bad_streak[node_id]--;
+    }
+
+    if(trust_score[node_id] <= TRUST_SUSPICIOUS_THRESHOLD) {
+      security_alert_flag = 1;
+    }
+  }
+
+  if(bad_streak[node_id] >= TRUST_ELIMINATE_STREAK) {
+    blacklisted[node_id] = 1;
+    security_alert_flag = 1;
+    LOG_WARN("[Trust] Node-%u BLACKLISTED (trust=%u, streak=%u)\n",
+             node_id, trust_score[node_id], bad_streak[node_id]);
+    return 1;
+  }
+
+  LOG_INFO("[Trust] Node-%u ev=%u → trust=%u (streak=%u)\n",
+           node_id, (unsigned)ev, trust_score[node_id], bad_streak[node_id]);
+  return 0;
+}
+/* ================================================================================ */
+
 
 void automation_check_conditions(void) {
   if(security_alert_flag == 1) {
